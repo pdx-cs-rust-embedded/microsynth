@@ -49,20 +49,23 @@ fn note_to_freq() -> f32 {
 
         let semitone_bend = 2.0 * (pitch_bend);
 
-        let new_freq = 440.0 * libm::powf(a, (note as f32 + 12. * octave as f32 + semitone_bend));
+        let new_freq = 440.0 * libm::powf(
+            2.0,
+            (1.0 / 12.0) * (note as f32  + semitone_bend) + octave as f32,
+        );
         new_freq
     })
 }
 
 fn steps_to_note()  {
     cortex_m::interrupt::free(|cs| {
-        let steps = *STEPS.borrow(cs).borrow();
-        let octave = steps / 7;
-        *OCTAVE.borrow(cs).borrow_mut() = octave;
-        let mut steps = steps % 7;
+        let mut steps = *STEPS.borrow(cs).borrow();
         if steps < 0 {
             steps *= -1;
         }
+        let octave = steps / 7;
+        *OCTAVE.borrow(cs).borrow_mut() = octave;
+        let steps = steps % 7;
         let is_minor_scale =  *USE_MINOR_SCALE.borrow(cs).borrow();
         let mut note = 0;
         if is_minor_scale {
