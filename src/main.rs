@@ -28,12 +28,21 @@ use lsm303agr::{AccelOutputDataRate, Lsm303agr};
 const ACCELEROMETER_ADDR: u8 = 0b0011001;
 const ACCELEROMETER_ID_REG: u8 = 0x0f;
 
-// Holy globals batman, they're all mutable!
-static GPIO: Mutex<RefCell<Option<Gpiote>>> = Mutex::new(RefCell::new(None));
+struct ButtonContext {
+    gpio: Gpiote,
+    steps: i32,
+}
+
+impl ButtonContext {
+    fn new(gpio: Gpiote) -> Self {
+        Self { gpio, steps: 0 }
+    }
+}
+
+static GPIO: Mutex<RefCell<Option<ButtonContext>>> = Mutex::new(RefCell::new(None));
 static RTC: Mutex<RefCell<Option<Rtc<pac::RTC0>>>> = Mutex::new(RefCell::new(None));
 static SPEAKER: Mutex<RefCell<Option<pwm::Pwm<pac::PWM0>>>> = Mutex::new(RefCell::new(None));
 static PITCH_BEND: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
-static STEPS: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static OCTAVE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static USE_MINOR_SCALE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(true));
@@ -57,44 +66,46 @@ fn note_to_freq() -> f32 {
 
 fn steps_to_note()  {
     cortex_m::interrupt::free(|cs| {
-        let mut steps = *STEPS.borrow(cs).borrow();
-        if steps < 0 {
-            steps *= -1;
-        }
-        let octave = steps / 7;
-        *OCTAVE.borrow(cs).borrow_mut() = octave;
-        let steps = steps % 7;
-        let is_minor_scale =  *USE_MINOR_SCALE.borrow(cs).borrow();
-        let mut note = 0;
-        if is_minor_scale {
-            // minor
-            note = match steps {
-                0 => 0,  // root
-                1 => 2,  // 2nd: whole step from root
-                2 => 3,  // 3rd: half step from 2nd
-                3 => 5,  // 4th: whole step from 3rd
-                4 => 7,  // 5th: whole step from 4th
-                5 => 8,  // 6th: half step from 5th
-                6 => 10, // 7th: whole step from 6th
-                7 => 12, // octave: whole step from 7th
-                _ => panic!("Invalid scale step"),
-            };
-        } else {
-            // major
-            note = match steps {
-                0 => 0,  // root
-                1 => 2,  // 2nd: whole step from root
-                2 => 4,  // 3rd: whole step from 2nd
-                3 => 5,  // 4th: half step from 3rd
-                4 => 7,  // 5th: whole step from 4th
-                5 => 9,  // 6th: whole step from 5th
-                6 => 11, // 7th: whole step from 6th
-                7 => 12, // octave: half step from 7th
-                _ => panic!("Invalid scale step"),
-            };
-        }
+        if let Some(button_context) = &*GPIO.borrow(cs).borrow() {
+            let mut steps = button_context.steps;
+            if steps < 0 {
+                steps *= -1;
+            }
+            let octave = steps / 7;
+            *OCTAVE.borrow(cs).borrow_mut() = octave;
+            let steps = steps % 7;
+            let is_minor_scale =  *USE_MINOR_SCALE.borrow(cs).borrow();
+            let mut note = 0;
+            if is_minor_scale {
+                // minor
+                note = match steps {
+                    0 => 0,  // root
+                    1 => 2,  // 2nd: whole step from root
+                    2 => 3,  // 3rd: half step from 2nd
+                    3 => 5,  // 4th: whole step from 3rd
+                    4 => 7,  // 5th: whole step from 4th
+                    5 => 8,  // 6th: half step from 5th
+                    6 => 10, // 7th: whole step from 6th
+                    7 => 12, // octave: whole step from 7th
+                    _ => panic!("Invalid scale step"),
+                };
+            } else {
+                // major
+                note = match steps {
+                    0 => 0,  // root
+                    1 => 2,  // 2nd: whole step from root
+                    2 => 4,  // 3rd: whole step from 2nd
+                    3 => 5,  // 4th: half step from 3rd
+                    4 => 7,  // 5th: whole step from 4th
+                    5 => 9,  // 6th: whole step from 5th
+                    6 => 11, // 7th: whole step from 6th
+                    7 => 12, // octave: half step from 7th
+                    _ => panic!("Invalid scale step"),
+                };
+            }
 
-        *NOTE.borrow(cs).borrow_mut() = note;
+            *NOTE.borrow(cs).borrow_mut() = note;
+        }
     });
 }
 
@@ -102,21 +113,20 @@ fn steps_to_note()  {
 #[interrupt]
 fn GPIOTE() {
     cortex_m::interrupt::free(|cs| {
-        if let Some(gpiote) = GPIO.borrow(cs).borrow().as_ref() {
-            let buttonapressed = gpiote.channel0().is_event_triggered();
-            let buttonbpressed = gpiote.channel1().is_event_triggered();
+        if let Some(bc) = GPIO.borrow(cs).borrow_mut().as_mut() {
+            let buttonapressed = bc.gpio.channel0().is_event_triggered();
+            let buttonbpressed = bc.gpio.channel1().is_event_triggered();
 
-            let mut steps = STEPS.borrow(cs).borrow_mut();
             match (buttonapressed, buttonbpressed) {
                 (false, false) => (),
-                (true, false) => *steps += 1,
-                (false, true) => *steps -= 1,
+                (true, false) => bc.steps += 1,
+                (false, true) => bc.steps -= 1,
                 (true, true) => (),
             }
 
             /* Clear events */
-            gpiote.channel0().reset_events();
-            gpiote.channel1().reset_events();
+            bc.gpio.channel0().reset_events();
+            bc.gpio.channel1().reset_events();
         }
     });
 }
@@ -188,7 +198,7 @@ fn main() -> ! {
             }
             pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
-            *GPIO.borrow(cs).borrow_mut() = Some(gpiote);
+            *GPIO.borrow(cs).borrow_mut() = Some(ButtonContext::new(gpiote));
 
             let mut rtc = Rtc::new(board.RTC0, 511).unwrap();
             rtc.enable_counter();
