@@ -27,13 +27,11 @@ use lsm303agr::{AccelOutputDataRate, Lsm303agr};
 
 const ACCELEROMETER_ADDR: u8 = 0b0011001;
 const ACCELEROMETER_ID_REG: u8 = 0x0f;
-const a: f32 = 1.059463094359f32;
 
 // Holy globals batman, they're all mutable!
 static GPIO: Mutex<RefCell<Option<Gpiote>>> = Mutex::new(RefCell::new(None));
 static RTC: Mutex<RefCell<Option<Rtc<pac::RTC0>>>> = Mutex::new(RefCell::new(None));
 static SPEAKER: Mutex<RefCell<Option<pwm::Pwm<pac::PWM0>>>> = Mutex::new(RefCell::new(None));
-static FREQUENCY: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(250));
 static PITCH_BEND: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
 static STEPS: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
