@@ -38,80 +38,59 @@ impl ButtonContext {
 struct PwmContext {
     rtc: Rtc<pac::RTC0>,
     speaker: pwm::Pwm<pac::PWM0>,
+    pitch_bend: f32,
 }
 
 impl PwmContext {
     fn new(rtc: Rtc<pac::RTC0>, speaker: pwm::Pwm<pac::PWM0>) -> Self {
-        Self { rtc, speaker }
+        Self { rtc, speaker, pitch_bend: 0.0 }
     }
 }
 
 static GPIO: Mutex<RefCell<Option<ButtonContext>>> = Mutex::new(RefCell::new(None));
 static PWM: Mutex<RefCell<Option<PwmContext>>> = Mutex::new(RefCell::new(None));
-static PITCH_BEND: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
-static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
-static OCTAVE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static USE_MINOR_SCALE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(true));
 
-fn note_to_freq() -> f32 {
-    cortex_m::interrupt::free(|cs| {
-        let note = *NOTE.borrow(cs).borrow();
-        let octave = *OCTAVE.borrow(cs).borrow();
-        let pitch_bend = *PITCH_BEND.borrow(cs).borrow();
-
-        let semitone_bend = 2.0 * (pitch_bend);
-
-        // New frequency.
-        let p = libm::powf(
-            2.0,
-            (1.0 / 12.0) * (note as f32 + semitone_bend) + octave as f32,
-        );
-        440.0 * p
-    })
+fn note_to_freq(semitone: i32, pitch_bend: f32) -> f32 {
+    let semitone_bend = 2.0 * pitch_bend;
+    440.0 * libm::powf(2.0, (1.0 / 12.0) * ((semitone - 69) as f32 + semitone_bend))
 }
 
-fn steps_to_note() {
-    cortex_m::interrupt::free(|cs| {
-        if let Some(button_context) = &*GPIO.borrow(cs).borrow() {
-            let mut steps = button_context.steps;
-            if steps < 0 {
-                steps *= -1;
-            }
-            let octave = steps / 7;
-            *OCTAVE.borrow(cs).borrow_mut() = octave;
-            let steps = steps % 7;
-            let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
-            let note = if is_minor_scale {
-                // minor
-                match steps {
-                    0 => 0,  // root
-                    1 => 2,  // 2nd: whole step from root
-                    2 => 3,  // 3rd: half step from 2nd
-                    3 => 5,  // 4th: whole step from 3rd
-                    4 => 7,  // 5th: whole step from 4th
-                    5 => 8,  // 6th: half step from 5th
-                    6 => 10, // 7th: whole step from 6th
-                    7 => 12, // octave: whole step from 7th
-                    _ => panic!("Invalid scale step"),
-                }
-            } else {
-                // major
-                match steps {
-                    0 => 0,  // root
-                    1 => 2,  // 2nd: whole step from root
-                    2 => 4,  // 3rd: whole step from 2nd
-                    3 => 5,  // 4th: half step from 3rd
-                    4 => 7,  // 5th: whole step from 4th
-                    5 => 9,  // 6th: whole step from 5th
-                    6 => 11, // 7th: whole step from 6th
-                    7 => 12, // octave: half step from 7th
-                    _ => panic!("Invalid scale step"),
-                }
-            };
-
-            *NOTE.borrow(cs).borrow_mut() = note;
+fn steps_to_freq(steps: i32, pitch_bend: f32, is_minor_scale: bool) -> f32 {
+    // XXX Excuse the terrible behavior here. Should
+    // div_euclid() and mod_euclid() to make everything come
+    // out, but that would be a pain in no_std, so so we
+    // instead just fudge everything positive and fix later.
+    // Means no more than 9 octaves down from A4, which is
+    // probably fine…
+    let octave = (steps + 63).max(0) / 7 - 4;
+    let steps = (steps + 63).max(0) % 7;
+    let note = if is_minor_scale {
+        // minor
+        match steps {
+            0 => 0,  // root
+            1 => 2,  // 2nd: whole step from root
+            2 => 3,  // 3rd: half step from 2nd
+            3 => 5,  // 4th: whole step from 3rd
+            4 => 7,  // 5th: whole step from 4th
+            5 => 8,  // 6th: half step from 5th
+            6 => 10, // 7th: whole step from 6th
+            _ => panic!("Invalid scale step"),
         }
-    });
+    } else {
+        // major
+        match steps {
+            0 => 0,  // root
+            1 => 2,  // 2nd: whole step from root
+            2 => 4,  // 3rd: whole step from 2nd
+            3 => 5,  // 4th: half step from 3rd
+            4 => 7,  // 5th: whole step from 4th
+            5 => 9,  // 6th: whole step from 5th
+            6 => 11, // 7th: whole step from 6th
+            _ => panic!("Invalid scale step"),
+        }
+    };
+    note_to_freq(note + 12 * octave + 9, pitch_bend)
 }
 
 #[interrupt]
@@ -121,12 +100,14 @@ fn GPIOTE() {
             let buttonapressed = bc.gpio.channel0().is_event_triggered();
             let buttonbpressed = bc.gpio.channel1().is_event_triggered();
 
+            // XXX Limit to 9 octaves up and down. See `steps_to_freq()` above.
             match (buttonapressed, buttonbpressed) {
                 (false, false) => (),
-                (true, false) => bc.steps += 1,
-                (false, true) => bc.steps -= 1,
+                (true, false) => bc.steps = (bc.steps - 1).max(-63),
+                (false, true) => bc.steps = (bc.steps + 1).min(63),
                 (true, true) => (),
             }
+            rprintln!("steps: {}", bc.steps);
 
             /* Clear events */
             bc.gpio.channel0().reset_events();
@@ -142,13 +123,16 @@ fn RTC0() {
     cortex_m::interrupt::free(|cs| {
         /* Borrow devices */
         if let Some(pc) = PWM.borrow(cs).borrow().as_ref() {
-            steps_to_note();
-            let freq = note_to_freq();
-            pc.speaker.set_period(Hertz(freq as u32));
+            if let Some(gpio) = GPIO.borrow(cs).borrow().as_ref() {
+                let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
+                let freq = steps_to_freq(gpio.steps, pc.pitch_bend, is_minor_scale);
+                rprintln!("rtc0: {} {}", gpio.steps, freq);
+                pc.speaker.set_period(Hertz(freq as u32));
+            }
 
-            // Restart the PWM at 25% duty cycle to preserve em ears
+            // Restart the PWM at 33% duty cycle to preserve em ears
             let max_duty = pc.speaker.max_duty();
-            pc.speaker.set_duty_on_common(max_duty / 2);
+            pc.speaker.set_duty_on_common(max_duty / 3);
 
             // Clear the RTC interrupt
             pc.rtc.reset_event(RtcInterrupt::Tick);
@@ -235,14 +219,16 @@ fn main() -> ! {
         if sensor.accel_status().unwrap().xyz_new_data {
             let data = sensor.accel_data().unwrap();
 
-            rprintln!("Acceleration: x {} y {} z {}", data.x, data.y, data.z);
+            //rprintln!("Acceleration: x {} y {} z {}", data.x, data.y, data.z);
             cortex_m::interrupt::free(move |cs| {
                 // Standard midi mapping ish
                 let new_freq = data.x as f32 / 8192.0;
                 let abs_data = libm::fabsf(data.x as f32);
                 // Extremely scientific method to arrive at 100.
-                if abs_data > 100. {
-                    *PITCH_BEND.borrow(cs).borrow_mut() = new_freq;
+                if abs_data > 100.0 {
+                    if let Some(pc) = PWM.borrow(cs).borrow_mut().as_mut() {
+                        pc.pitch_bend= new_freq;
+                    }
                 }
             });
         }
