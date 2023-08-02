@@ -30,11 +30,12 @@ struct Context {
     speaker: pwm::Pwm<pac::PWM0>,
     steps: i32,
     pitch_bend: f32,
+    bounce: u8,
 }
 
 impl Context {
     fn new(gpio: Gpiote, rtc: Rtc<pac::RTC0>, speaker: pwm::Pwm<pac::PWM0>) -> Self {
-        Self { gpio, rtc, speaker, steps: 0, pitch_bend: 0.0 }
+        Self { gpio, rtc, speaker, steps: 0, pitch_bend: 0.0, bounce: 0 }
     }
 }
 
@@ -87,14 +88,29 @@ fn steps_to_freq(steps: i32, pitch_bend: f32, is_minor_scale: bool) -> f32 {
 fn GPIOTE() {
     cortex_m::interrupt::free(|cs| {
         if let Some(pc) = CONTEXT.borrow(cs).borrow_mut().as_mut() {
+            // Check whether in debounce.
+            if pc.bounce > 0 {
+                pc.gpio.channel0().reset_events();
+                pc.gpio.channel1().reset_events();
+                return;
+            }
+
             let buttonapressed = pc.gpio.channel0().is_event_triggered();
             let buttonbpressed = pc.gpio.channel1().is_event_triggered();
 
             // XXX Limit to 9 octaves up and down. See `steps_to_freq()` above.
             match (buttonapressed, buttonbpressed) {
                 (false, false) => (),
-                (true, false) => pc.steps = (pc.steps - 1).max(-63),
-                (false, true) => pc.steps = (pc.steps + 1).min(63),
+                (true, false) => {
+                    pc.steps = (pc.steps - 1).max(-63);
+                    // Start the debounce counter.
+                    pc.bounce = 8;
+                }
+                (false, true) => {
+                    pc.steps = (pc.steps + 1).min(63);
+                    // Start the debounce counter.
+                    pc.bounce = 8;
+                }
                 (true, true) => (),
             }
             rprintln!("steps: {}", pc.steps);
@@ -112,10 +128,10 @@ fn RTC0() {
     /* Enter critical section */
     cortex_m::interrupt::free(|cs| {
         /* Borrow devices */
-        if let Some(pc) = CONTEXT.borrow(cs).borrow().as_ref() {
+        if let Some(pc) = CONTEXT.borrow(cs).borrow_mut().as_mut() {
             let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
             let freq = steps_to_freq(pc.steps, pc.pitch_bend, is_minor_scale);
-            rprintln!("rtc0: {} {}", pc.steps, freq);
+            //rprintln!("rtc0: {} {}", pc.steps, freq);
             pc.speaker.set_period(Hertz(freq as u32));
 
             // Restart the PWM at 33% duty cycle to preserve em ears
@@ -124,6 +140,11 @@ fn RTC0() {
 
             // Clear the RTC interrupt
             pc.rtc.reset_event(RtcInterrupt::Tick);
+
+            // Bump down the debounce counter.
+            if pc.bounce > 0 {
+                pc.bounce -= 1;
+            }
         }
     });
 }
