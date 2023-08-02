@@ -24,31 +24,21 @@ use microbit::{
 
 use lsm303agr::{AccelOutputDataRate, Lsm303agr};
 
-struct ButtonContext {
+struct Context {
     gpio: Gpiote,
-    steps: i32,
-}
-
-impl ButtonContext {
-    fn new(gpio: Gpiote) -> Self {
-        Self { gpio, steps: 0 }
-    }
-}
-
-struct PwmContext {
     rtc: Rtc<pac::RTC0>,
     speaker: pwm::Pwm<pac::PWM0>,
+    steps: i32,
     pitch_bend: f32,
 }
 
-impl PwmContext {
-    fn new(rtc: Rtc<pac::RTC0>, speaker: pwm::Pwm<pac::PWM0>) -> Self {
-        Self { rtc, speaker, pitch_bend: 0.0 }
+impl Context {
+    fn new(gpio: Gpiote, rtc: Rtc<pac::RTC0>, speaker: pwm::Pwm<pac::PWM0>) -> Self {
+        Self { gpio, rtc, speaker, steps: 0, pitch_bend: 0.0 }
     }
 }
 
-static GPIO: Mutex<RefCell<Option<ButtonContext>>> = Mutex::new(RefCell::new(None));
-static PWM: Mutex<RefCell<Option<PwmContext>>> = Mutex::new(RefCell::new(None));
+static CONTEXT: Mutex<RefCell<Option<Context>>> = Mutex::new(RefCell::new(None));
 static USE_MINOR_SCALE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(true));
 
 fn note_to_freq(semitone: i32, pitch_bend: f32) -> f32 {
@@ -96,22 +86,22 @@ fn steps_to_freq(steps: i32, pitch_bend: f32, is_minor_scale: bool) -> f32 {
 #[interrupt]
 fn GPIOTE() {
     cortex_m::interrupt::free(|cs| {
-        if let Some(bc) = GPIO.borrow(cs).borrow_mut().as_mut() {
-            let buttonapressed = bc.gpio.channel0().is_event_triggered();
-            let buttonbpressed = bc.gpio.channel1().is_event_triggered();
+        if let Some(pc) = CONTEXT.borrow(cs).borrow_mut().as_mut() {
+            let buttonapressed = pc.gpio.channel0().is_event_triggered();
+            let buttonbpressed = pc.gpio.channel1().is_event_triggered();
 
             // XXX Limit to 9 octaves up and down. See `steps_to_freq()` above.
             match (buttonapressed, buttonbpressed) {
                 (false, false) => (),
-                (true, false) => bc.steps = (bc.steps - 1).max(-63),
-                (false, true) => bc.steps = (bc.steps + 1).min(63),
+                (true, false) => pc.steps = (pc.steps - 1).max(-63),
+                (false, true) => pc.steps = (pc.steps + 1).min(63),
                 (true, true) => (),
             }
-            rprintln!("steps: {}", bc.steps);
+            rprintln!("steps: {}", pc.steps);
 
             /* Clear events */
-            bc.gpio.channel0().reset_events();
-            bc.gpio.channel1().reset_events();
+            pc.gpio.channel0().reset_events();
+            pc.gpio.channel1().reset_events();
         }
     });
 }
@@ -122,13 +112,11 @@ fn RTC0() {
     /* Enter critical section */
     cortex_m::interrupt::free(|cs| {
         /* Borrow devices */
-        if let Some(pc) = PWM.borrow(cs).borrow().as_ref() {
-            if let Some(gpio) = GPIO.borrow(cs).borrow().as_ref() {
-                let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
-                let freq = steps_to_freq(gpio.steps, pc.pitch_bend, is_minor_scale);
-                rprintln!("rtc0: {} {}", gpio.steps, freq);
-                pc.speaker.set_period(Hertz(freq as u32));
-            }
+        if let Some(pc) = CONTEXT.borrow(cs).borrow().as_ref() {
+            let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
+            let freq = steps_to_freq(pc.steps, pc.pitch_bend, is_minor_scale);
+            rprintln!("rtc0: {} {}", pc.steps, freq);
+            pc.speaker.set_period(Hertz(freq as u32));
 
             // Restart the PWM at 33% duty cycle to preserve em ears
             let max_duty = pc.speaker.max_duty();
@@ -177,8 +165,6 @@ fn main() -> ! {
         }
         pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
-        *GPIO.borrow(cs).borrow_mut() = Some(ButtonContext::new(gpiote));
-
         let mut rtc = Rtc::new(board.RTC0, 511).unwrap();
         rtc.enable_counter();
         rtc.enable_interrupt(RtcInterrupt::Tick, Some(&mut board.NVIC));
@@ -207,7 +193,7 @@ fn main() -> ! {
         let max_duty = speaker.max_duty();
         speaker.set_duty_on_common(max_duty / 2);
 
-        *PWM.borrow(cs).borrow_mut() = Some(PwmContext::new(rtc, speaker));
+        *CONTEXT.borrow(cs).borrow_mut() = Some(Context::new(gpiote, rtc, speaker));
 
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::RTC0);
@@ -226,7 +212,7 @@ fn main() -> ! {
                 let abs_data = libm::fabsf(data.x as f32);
                 // Extremely scientific method to arrive at 100.
                 if abs_data > 100.0 {
-                    if let Some(pc) = PWM.borrow(cs).borrow_mut().as_mut() {
+                    if let Some(pc) = CONTEXT.borrow(cs).borrow_mut().as_mut() {
                         pc.pitch_bend= new_freq;
                     }
                 }
