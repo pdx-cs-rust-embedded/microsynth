@@ -42,7 +42,8 @@ impl Context {
 static CONTEXT: Mutex<RefCell<Option<Context>>> = Mutex::new(RefCell::new(None));
 static USE_MINOR_SCALE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(true));
 
-fn note_to_freq(semitone: i32, pitch_bend: f32) -> f32 {
+// Map MIDI key number to key frequency.
+fn key_to_freq(semitone: i32, pitch_bend: f32) -> f32 {
     let semitone_bend = 2.0 * pitch_bend;
     440.0 * libm::powf(2.0, (1.0 / 12.0) * ((semitone - 69) as f32 + semitone_bend))
 }
@@ -55,33 +56,31 @@ fn steps_to_freq(steps: i32, pitch_bend: f32, is_minor_scale: bool) -> f32 {
     // Means no more than 9 octaves down from A4, which is
     // probably fine…
     let octave = (steps + 63).max(0) / 7 - 4;
-    let steps = (steps + 63).max(0) % 7;
-    let note = if is_minor_scale {
+    let note = ((steps + 63).max(0) % 7) as usize;
+    let scale = if is_minor_scale {
         // minor
-        match steps {
-            0 => 0,  // root
-            1 => 2,  // 2nd: whole step from root
-            2 => 3,  // 3rd: half step from 2nd
-            3 => 5,  // 4th: whole step from 3rd
-            4 => 7,  // 5th: whole step from 4th
-            5 => 8,  // 6th: half step from 5th
-            6 => 10, // 7th: whole step from 6th
-            _ => panic!("Invalid scale step"),
-        }
+        [
+            0,  // root
+            2,  // 2nd: whole step from root
+            3,  // 3rd: half step from 2nd
+            5,  // 4th: whole step from 3rd
+            7,  // 5th: whole step from 4th
+            8,  // 6th: half step from 5th
+            10, // 7th: whole step from 6th
+        ]
     } else {
         // major
-        match steps {
-            0 => 0,  // root
-            1 => 2,  // 2nd: whole step from root
-            2 => 4,  // 3rd: whole step from 2nd
-            3 => 5,  // 4th: half step from 3rd
-            4 => 7,  // 5th: whole step from 4th
-            5 => 9,  // 6th: whole step from 5th
-            6 => 11, // 7th: whole step from 6th
-            _ => panic!("Invalid scale step"),
-        }
+        [
+            0,  // root
+            2,  // 2nd: whole step from root
+            4,  // 3rd: whole step from 2nd
+            5,  // 4th: half step from 3rd
+            7,  // 5th: whole step from 4th
+            9,  // 6th: whole step from 5th
+            11, // 7th: whole step from 6th
+        ]
     };
-    note_to_freq(note + 12 * octave + 9, pitch_bend)
+    key_to_freq(scale[note] + 12 * octave + 9, pitch_bend)
 }
 
 #[interrupt]
