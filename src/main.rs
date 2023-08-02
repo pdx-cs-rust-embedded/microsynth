@@ -8,7 +8,6 @@ use rtt_target::{rprintln, rtt_init_print};
 
 use cortex_m_rt::entry;
 use microbit::hal::gpiote::Gpiote;
-use microbit::hal::prelude::_embedded_hal_blocking_i2c_WriteRead;
 use microbit::hal::twim;
 use microbit::pac::twim0::frequency::FREQUENCY_A;
 use microbit::{
@@ -24,9 +23,6 @@ use microbit::{
 };
 
 use lsm303agr::{AccelOutputDataRate, Lsm303agr};
-
-const ACCELEROMETER_ADDR: u8 = 0b0011001;
-const ACCELEROMETER_ID_REG: u8 = 0x0f;
 
 struct ButtonContext {
     gpio: Gpiote,
@@ -174,17 +170,13 @@ fn main() -> ! {
         .enable_interrupt();
     channel1.reset_events();
 
-    let mut i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
-
-    let mut acc = [0];
-
-    i2c.write_read(ACCELEROMETER_ADDR, &[ACCELEROMETER_ID_REG], &mut acc)
-        .unwrap();
-
-    rprintln!("The accelerometer chip's id is: {:#b}", acc[0]);
-
+    let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
     let mut sensor = Lsm303agr::new_with_i2c(i2c);
     sensor.init().unwrap();
+
+    let acc_id = sensor.accelerometer_id().unwrap();
+    rprintln!("The accelerometer chip's id is: {:#b}", acc_id);
+
     sensor.set_accel_odr(AccelOutputDataRate::Hz50).unwrap();
 
     cortex_m::interrupt::free(move |cs| {
