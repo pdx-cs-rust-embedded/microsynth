@@ -35,9 +35,19 @@ impl ButtonContext {
     }
 }
 
+struct PwmContext {
+    rtc: Rtc<pac::RTC0>,
+    speaker: pwm::Pwm<pac::PWM0>,
+}
+
+impl PwmContext {
+    fn new(rtc: Rtc<pac::RTC0>, speaker: pwm::Pwm<pac::PWM0>) -> Self {
+        Self { rtc, speaker }
+    }
+}
+
 static GPIO: Mutex<RefCell<Option<ButtonContext>>> = Mutex::new(RefCell::new(None));
-static RTC: Mutex<RefCell<Option<Rtc<pac::RTC0>>>> = Mutex::new(RefCell::new(None));
-static SPEAKER: Mutex<RefCell<Option<pwm::Pwm<pac::PWM0>>>> = Mutex::new(RefCell::new(None));
+static PWM: Mutex<RefCell<Option<PwmContext>>> = Mutex::new(RefCell::new(None));
 static PITCH_BEND: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
 static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static OCTAVE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
@@ -131,20 +141,17 @@ fn RTC0() {
     /* Enter critical section */
     cortex_m::interrupt::free(|cs| {
         /* Borrow devices */
-        if let (Some(speaker), Some(rtc)) = (
-            SPEAKER.borrow(cs).borrow().as_ref(),
-            RTC.borrow(cs).borrow().as_ref(),
-        ) {
+        if let Some(pc) = PWM.borrow(cs).borrow().as_ref() {
             steps_to_note();
             let freq = note_to_freq();
-            speaker.set_period(Hertz(freq as u32));
+            pc.speaker.set_period(Hertz(freq as u32));
 
             // Restart the PWM at 25% duty cycle to preserve em ears
-            let max_duty = speaker.max_duty();
-            speaker.set_duty_on_common(max_duty / 2);
+            let max_duty = pc.speaker.max_duty();
+            pc.speaker.set_duty_on_common(max_duty / 2);
 
             // Clear the RTC interrupt
-            rtc.reset_event(RtcInterrupt::Tick);
+            pc.rtc.reset_event(RtcInterrupt::Tick);
         }
     });
 }
@@ -193,8 +200,6 @@ fn main() -> ! {
         rtc.enable_interrupt(RtcInterrupt::Tick, Some(&mut board.NVIC));
         rtc.enable_event(RtcInterrupt::Tick);
 
-        *RTC.borrow(cs).borrow_mut() = Some(rtc);
-
         let mut speaker_pin = board.speaker_pin.into_push_pull_output(gpio::Level::High);
         let _ = speaker_pin.set_low();
 
@@ -218,7 +223,7 @@ fn main() -> ! {
         let max_duty = speaker.max_duty();
         speaker.set_duty_on_common(max_duty / 2);
 
-        *SPEAKER.borrow(cs).borrow_mut() = Some(speaker);
+        *PWM.borrow(cs).borrow_mut() = Some(PwmContext::new(rtc, speaker));
 
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::RTC0);
