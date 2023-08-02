@@ -47,7 +47,6 @@ static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static OCTAVE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static USE_MINOR_SCALE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(true));
 
-
 fn note_to_freq() -> f32 {
     cortex_m::interrupt::free(|cs| {
         let note = *NOTE.borrow(cs).borrow();
@@ -57,14 +56,15 @@ fn note_to_freq() -> f32 {
         let semitone_bend = 2.0 * (pitch_bend);
 
         // New frequency.
-        440.0 * libm::powf(
+        let p = libm::powf(
             2.0,
-            (1.0 / 12.0) * (note as f32  + semitone_bend) + octave as f32,
-        )
+            (1.0 / 12.0) * (note as f32 + semitone_bend) + octave as f32,
+        );
+        440.0 * p
     })
 }
 
-fn steps_to_note()  {
+fn steps_to_note() {
     cortex_m::interrupt::free(|cs| {
         if let Some(button_context) = &*GPIO.borrow(cs).borrow() {
             let mut steps = button_context.steps;
@@ -74,7 +74,7 @@ fn steps_to_note()  {
             let octave = steps / 7;
             *OCTAVE.borrow(cs).borrow_mut() = octave;
             let steps = steps % 7;
-            let is_minor_scale =  *USE_MINOR_SCALE.borrow(cs).borrow();
+            let is_minor_scale = *USE_MINOR_SCALE.borrow(cs).borrow();
             let note = if is_minor_scale {
                 // minor
                 match steps {
@@ -108,7 +108,6 @@ fn steps_to_note()  {
     });
 }
 
-
 #[interrupt]
 fn GPIOTE() {
     cortex_m::interrupt::free(|cs| {
@@ -130,7 +129,6 @@ fn GPIOTE() {
     });
 }
 
-
 // RTC interrupt, exectued for each RTC tick
 #[interrupt]
 fn RTC0() {
@@ -139,7 +137,7 @@ fn RTC0() {
         /* Borrow devices */
         if let (Some(speaker), Some(rtc)) = (
             SPEAKER.borrow(cs).borrow().as_ref(),
-            RTC.borrow(cs).borrow().as_ref()
+            RTC.borrow(cs).borrow().as_ref(),
         ) {
             steps_to_note();
             let freq = note_to_freq();
@@ -176,8 +174,7 @@ fn main() -> ! {
         .enable_interrupt();
     channel1.reset_events();
 
-    let mut i2c =
-        { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
+    let mut i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
 
     let mut acc = [0];
 
@@ -248,7 +245,7 @@ fn main() -> ! {
                 let abs_data = libm::fabsf(data.x as f32);
                 // Extremely scientific method to arrive at 100.
                 if abs_data > 100. {
-                    *PITCH_BEND.borrow(cs).borrow_mut() = new_freq ;
+                    *PITCH_BEND.borrow(cs).borrow_mut() = new_freq;
                 }
             });
         }
