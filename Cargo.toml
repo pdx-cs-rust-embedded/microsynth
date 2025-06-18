@@ -9,6 +9,7 @@ microbit-v2 = "0.13.0"
 rtt-target = "0.4"
 lsm303agr = "0.2.2"
 libm = "0.2.6"
+embedded-hal = "1.0.0"
 
 [dependencies.cortex-m]
 version = "0.7"

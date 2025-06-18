@@ -2,7 +2,7 @@
 #![no_std]
 
 use core::cell::RefCell;
-use cortex_m::interrupt::Mutex;
+use cortex_m::{asm, interrupt::Mutex};
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
@@ -27,13 +27,13 @@ use lsm303agr::{AccelOutputDataRate, Lsm303agr};
 
 const ACCELEROMETER_ADDR: u8 = 0b0011001;
 const ACCELEROMETER_ID_REG: u8 = 0x0f;
-const a: f32 = 1.059463094359f32;
+// 2**(1/12), but f32::powf() is not const in stable Rust.
+const A: f32 = 1.0594631;
 
 // Holy globals batman, they're all mutable!
 static GPIO: Mutex<RefCell<Option<Gpiote>>> = Mutex::new(RefCell::new(None));
 static RTC: Mutex<RefCell<Option<Rtc<pac::RTC0>>>> = Mutex::new(RefCell::new(None));
 static SPEAKER: Mutex<RefCell<Option<pwm::Pwm<pac::PWM0>>>> = Mutex::new(RefCell::new(None));
-static FREQUENCY: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(250));
 static PITCH_BEND: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
 static STEPS: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
 static NOTE: Mutex<RefCell<i32>> = Mutex::new(RefCell::new(0));
@@ -49,8 +49,10 @@ fn note_to_freq() -> f32 {
 
         let semitone_bend = 2.0 * (pitch_bend);
 
-        let new_freq = 440.0 * libm::powf(a, (note as f32 + 12. * octave as f32 + semitone_bend));
-        new_freq
+        let p = note as f32 + 12.0 * octave as f32 + semitone_bend;
+
+        // Return new frequency.
+        440.0 * libm::powf(A, p)
     })
 }
 
@@ -64,10 +66,9 @@ fn steps_to_note()  {
             steps *= -1;
         }
         let is_minor_scale =  *USE_MINOR_SCALE.borrow(cs).borrow();
-        let mut note = 0;
-        if is_minor_scale {
+        let note = if is_minor_scale {
             // minor
-            note = match steps {
+            match steps {
                 0 => 0,  // root
                 1 => 2,  // 2nd: whole step from root
                 2 => 3,  // 3rd: half step from 2nd
@@ -77,10 +78,10 @@ fn steps_to_note()  {
                 6 => 10, // 7th: whole step from 6th
                 7 => 12, // octave: whole step from 7th
                 _ => panic!("Invalid scale step"),
-            };
+            }
         } else {
             // major
-            note = match steps {
+            match steps {
                 0 => 0,  // root
                 1 => 2,  // 2nd: whole step from root
                 2 => 4,  // 3rd: whole step from 2nd
@@ -90,8 +91,8 @@ fn steps_to_note()  {
                 6 => 11, // 7th: whole step from 6th
                 7 => 12, // octave: half step from 7th
                 _ => panic!("Invalid scale step"),
-            };
-        }
+            }
+        };
 
         *NOTE.borrow(cs).borrow_mut() = note;
     });
@@ -245,5 +246,7 @@ fn main() -> ! {
         }
     }
 
-    loop {}
+    loop {
+        asm::wfe();
+    }
 }
