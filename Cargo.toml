@@ -1,20 +1,17 @@
 [package]
 name = "microsynth"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 cortex-m-rt = "0.7"
-microbit-v2 = "0.13.0"
-rtt-target = "0.4"
-lsm303agr = "0.2.2"
-libm = "0.2.6"
+microbit-v2 = "0.15.1"
+rtt-target = "0.6"
+lsm303agr = "1.1.0"
+libm = "0.2.15"
 embedded-hal = "1.0.0"
+panic-rtt-target = "0.2"
 
 [dependencies.cortex-m]
 version = "0.7"
 features = ["inline-asm", "critical-section-single-core"]
-
-[dependencies.panic-rtt-target]
-version = "0.1"
-features = ["cortex-m"]
